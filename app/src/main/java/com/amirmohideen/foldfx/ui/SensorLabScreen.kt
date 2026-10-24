@@ -53,7 +53,6 @@ import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import com.amirmohideen.foldfx.FoldRuntime
 import com.amirmohideen.foldfx.core.FoldTrace
-import com.amirmohideen.foldfx.core.SensorStats
 import kotlin.math.roundToInt
 
 private const val GRAPH_SECONDS = 6f
@@ -66,18 +65,17 @@ private val SpeedLine = Color(0xFF6FB7E8)
 fun SensorLabScreen(runtime: FoldRuntime, activity: Activity, onBack: () -> Unit) {
     val context = LocalContext.current
     var now by remember { mutableLongStateOf(runtime.now()) }
-    var summary by remember { mutableStateOf(runtime.stats.summary()) }
     var posture by remember { mutableStateOf("Waiting for the window manager…") }
-    val report = remember(summary, posture) { buildReport(context, runtime, posture, summary) }
+    var report by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
-        var lastSummary = 0L
+        var lastReport = 0L
         while (true) {
             withFrameNanos {
                 now = runtime.now()
-                if (now - lastSummary > 250_000_000L) {
-                    summary = runtime.stats.summary()
-                    lastSummary = now
+                if (now - lastReport > 250_000_000L) {
+                    report = buildReport(context, runtime, posture)
+                    lastReport = now
                 }
             }
         }
@@ -91,7 +89,7 @@ fun SensorLabScreen(runtime: FoldRuntime, activity: Activity, onBack: () -> Unit
         }
     }
 
-    val state = runtime.tracker.stateAt(now)
+    val state = runtime.stateAt(now)
     Column(
         Modifier
             .fillMaxSize()
@@ -106,6 +104,18 @@ fun SensorLabScreen(runtime: FoldRuntime, activity: Activity, onBack: () -> Unit
             TextButton(onClick = onBack) { Text("←  Back", color = Parchment) }
             Text("Sensor lab", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Brass)
             Text("Fold slowly, fold fast, slam it flat. Then share the report.", color = Muted)
+            Text(
+                when {
+                    runtime.usingGyro ->
+                        "This phone's hinge sensor only reports 0°, 90° and 180°, so FoldFX follows the fold " +
+                            "with the gyroscope. Try swinging each side in turn."
+                    runtime.sensors.hinge != null -> "This phone reports every hinge angle."
+                    else -> "This phone has no hinge sensor."
+                },
+                color = Parchment,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 8.dp),
+            )
 
             Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Reading("Angle", "${"%.1f".format(state.angle)}°", AngleLine)
@@ -136,7 +146,13 @@ fun SensorLabScreen(runtime: FoldRuntime, activity: Activity, onBack: () -> Unit
                 OutlinedButton(onClick = { copy(context, report) }) {
                     Text("Copy")
                 }
-                OutlinedButton(onClick = { runtime.stats.reset() }) { Text("Reset") }
+                OutlinedButton(
+                    onClick = {
+                        runtime.hingeStats.reset()
+                        runtime.gyroStats.reset()
+                        runtime.field.reset()
+                    },
+                ) { Text("Reset") }
             }
 
             Text(
@@ -190,30 +206,55 @@ private fun DrawScope.drawTrace(trace: FoldTrace, now: Long, currentAngle: Float
     drawPath(angles, AngleLine, style = Stroke(width = 2f * density))
 }
 
-private fun buildReport(context: Context, runtime: FoldRuntime, posture: String, summary: SensorStats.Summary) =
-    buildString {
-        appendLine("FoldFX sensor report")
-        appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE}), Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT}")
-        val sensor = runtime.hinge.sensor
-        if (sensor == null) {
-            appendLine("Hinge sensor: none")
-        } else {
-            appendLine("Hinge sensor: ${sensor.name} by ${sensor.vendor}, version ${sensor.version}")
-            appendLine(
-                "  resolution ${sensor.resolution}°, range ${sensor.maximumRange}°, " +
-                    "min delay ${sensor.minDelay} µs, reporting ${reportingMode(sensor)}, wake-up ${sensor.isWakeUpSensor}",
-            )
-        }
-        val declared = context.packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_HINGE_ANGLE)
-        appendLine("Declares hinge-angle feature: $declared")
-        appendLine("Fold posture: $posture")
-        appendLine("Readings: ${summary.readings}")
-        appendLine("  most per second: ${summary.peakReadingsPerSecond}")
-        appendLine("  gap while moving: median ${ms(summary.medianIntervalMs)}, 90th percentile ${ms(summary.p90IntervalMs)}")
-        appendLine("  smallest step: ${summary.smallestStepDegrees?.let { "%.3f°".format(it) } ?: "–"}, whole degrees only: ${summary.wholeDegreesOnly}")
-        appendLine("  angle range: ${deg(summary.minAngle)} to ${deg(summary.maxAngle)}")
-        append("  fastest: ${summary.fastestDegreesPerSecond.roundToInt()}°/s")
+private fun buildReport(context: Context, runtime: FoldRuntime, posture: String) = buildString {
+    appendLine("FoldFX sensor report")
+    appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE}), Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT}")
+    appendLine(
+        when {
+            runtime.usingGyro -> "Following the fold with: gyroscope (hinge reports stops only)"
+            runtime.sensors.hinge != null -> "Following the fold with: hinge sensor"
+            else -> "Following the fold with: on-screen slider"
+        },
+    )
+    val hinge = runtime.sensors.hinge
+    if (hinge == null) {
+        appendLine("Hinge sensor: none")
+    } else {
+        appendLine("Hinge sensor: ${describe(hinge)}")
     }
+    val declared = context.packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_HINGE_ANGLE)
+    appendLine("Declares hinge-angle feature: $declared")
+    appendLine("Fold posture: $posture")
+    val hingeSummary = runtime.hingeStats.summary()
+    appendLine("Hinge readings: ${hingeSummary.readings}")
+    appendLine("  most per second: ${hingeSummary.peakReadingsPerSecond}")
+    appendLine("  gap while moving: median ${ms(hingeSummary.medianIntervalMs)}, 90th percentile ${ms(hingeSummary.p90IntervalMs)}")
+    appendLine("  smallest step: ${hingeSummary.smallestStepDegrees?.let { "%.3f°".format(it) } ?: "–"}, whole degrees only: ${hingeSummary.wholeDegreesOnly}")
+    appendLine("  angle range: ${deg(hingeSummary.minAngle)} to ${deg(hingeSummary.maxAngle)}")
+
+    val gyro = runtime.sensors.gyroscope
+    appendLine("Gyroscope: ${gyro?.let(::describe) ?: "none"}")
+    val gyroSummary = runtime.gyroStats.summary()
+    appendLine("  readings: ${gyroSummary.readings}, most per second: ${gyroSummary.peakReadingsPerSecond}, fastest fold: ${gyroSummary.fastestDegreesPerSecond.roundToInt()}°/s")
+    val tracker = runtime.gyroTracker
+    appendLine("  hinge axis: ${tracker.axisName}, direction learned: ${tracker.calibrated}, last swing missed: ${tracker.missedSwing}")
+    for (t in tracker.transitions()) {
+        appendLine(
+            "  stop ${t.from.roundToInt()}→${t.to.roundToInt()}: gyro felt ${t.gyroDegrees.roundToInt()}°, " +
+                "estimate was ${t.estimateBefore.roundToInt()}°, still for ${t.quietMs.roundToInt()} ms",
+        )
+    }
+
+    appendLine("Magnetometer: ${runtime.sensors.magnetometer?.let(::describe) ?: "none"}")
+    for (line in runtime.field.summary()) appendLine("  $line")
+
+    appendLine("All sensors:")
+    for (sensor in runtime.sensors.all) appendLine("  ${sensor.name} | ${sensor.vendor} | ${sensor.stringType}")
+}.trimEnd()
+
+private fun describe(sensor: Sensor) =
+    "${sensor.name} by ${sensor.vendor}, resolution ${sensor.resolution}, range ${sensor.maximumRange}, " +
+        "min delay ${sensor.minDelay} µs, ${reportingMode(sensor)}, wake-up ${sensor.isWakeUpSensor}"
 
 private fun reportingMode(sensor: Sensor) = when (sensor.reportingMode) {
     Sensor.REPORTING_MODE_CONTINUOUS -> "continuous"

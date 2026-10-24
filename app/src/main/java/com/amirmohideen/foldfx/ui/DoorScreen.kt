@@ -55,7 +55,8 @@ fun DoorScreen(runtime: FoldRuntime, onBack: () -> Unit) {
     var seconds by remember { mutableFloatStateOf(0f) }
     var moved by remember { mutableStateOf(false) }
     var sliderAngle by remember { mutableFloatStateOf(180f) }
-    val hasSensor = runtime.hinge.sensor != null
+    var missedSwing by remember { mutableStateOf(false) }
+    val hasSensor = runtime.sensors.hinge != null
 
     val view = LocalView.current
     DisposableEffect(scene) {
@@ -87,6 +88,7 @@ fun DoorScreen(runtime: FoldRuntime, onBack: () -> Unit) {
                 angle += (state.angle - angle) * (1f - exp(-dt / 0.035f))
                 speed = state.speed
                 if (state.speed > 5f) moved = true
+                missedSwing = runtime.usingGyro && runtime.gyroTracker.missedSwing
                 pendingSlam.getAndSet(null)?.let { shake = maxOf(shake, 0.4f + 0.6f * it) }
                 shake *= exp(-dt / 0.12f)
                 seconds += dt
@@ -106,13 +108,18 @@ fun DoorScreen(runtime: FoldRuntime, onBack: () -> Unit) {
             Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp).widthIn(max = 480.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (!moved) {
+            val hint = when {
+                missedSwing -> "Swing the other side instead.\nYour phone can only feel one side move."
+                moved -> null
+                !hasSensor -> "No hinge sensor here, so drag the slider to swing the door."
+                runtime.usingGyro ->
+                    "Hold one side still and swing the other like a door.\n" +
+                        "Slowly for a long creak, fast for a quick squeak.\nSwing it open flat fast to slam."
+                else -> "Fold slowly for a long, loud creak.\nFold fast for a quick squeak.\nOpen it flat fast to slam the door."
+            }
+            if (hint != null) {
                 Text(
-                    if (hasSensor) {
-                        "Fold slowly for a long, loud creak.\nFold fast for a quick squeak.\nOpen it flat fast to slam the door."
-                    } else {
-                        "No hinge sensor here, so drag the slider to swing the door."
-                    },
+                    hint,
                     color = Parchment,
                     textAlign = TextAlign.Center,
                     fontSize = 15.sp,

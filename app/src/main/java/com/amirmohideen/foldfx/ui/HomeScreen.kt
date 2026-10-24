@@ -54,7 +54,7 @@ fun HomeScreen(runtime: FoldRuntime, onOpen: (Screen) -> Unit) {
                     Text("Fold your phone. Feel things.", color = Muted)
                 }
             }
-            if (runtime.hinge.sensor == null) {
+            if (runtime.sensors.hinge == null) {
                 item {
                     Notice(
                         "This phone doesn't report its hinge angle, so FoldFX can't feel it fold. " +
