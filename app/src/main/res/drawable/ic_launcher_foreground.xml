@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A door standing ajar with a brass knob, centred in the adaptive icon's 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Frame -->
+    <path
+        android:fillColor="#FF6B4428"
+        android:pathData="M36,28 L72,28 L72,82 L36,82 Z" />
+    <!-- Dark room beyond -->
+    <path
+        android:fillColor="#FF0E0A08"
+        android:pathData="M40,32 L68,32 L68,82 L40,82 Z" />
+    <!-- Warm light spilling through -->
+    <path
+        android:fillColor="#66FFB347"
+        android:pathData="M52,82 L68,82 L68,60 Z" />
+    <!-- Door leaf, swung open in perspective -->
+    <path
+        android:fillColor="#FFA0683C"
+        android:pathData="M40,32 L56,37 L56,79 L40,82 Z" />
+    <!-- Knob -->
+    <path
+        android:fillColor="#FFE2B04A"
+        android:pathData="M53,58 m-2.6,0 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0" />
+</vector>
