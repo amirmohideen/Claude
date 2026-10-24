@@ -238,6 +238,7 @@ private fun buildReport(context: Context, runtime: FoldRuntime, posture: String)
     appendLine("  readings: ${gyroSummary.readings}, most per second: ${gyroSummary.peakReadingsPerSecond}, fastest fold: ${gyroSummary.fastestDegreesPerSecond.roundToInt()}°/s")
     val tracker = runtime.gyroTracker
     appendLine("  hinge axis: ${tracker.axisName}, direction learned: ${tracker.calibrated}, last swing missed: ${tracker.missedSwing}")
+    appendLine("  hinge leaves flat at about ${tracker.flatEdgeDegrees.roundToInt()}°")
     for (t in tracker.transitions()) {
         appendLine(
             "  stop ${t.from.roundToInt()}→${t.to.roundToInt()}: gyro felt ${t.gyroDegrees.roundToInt()}°, " +

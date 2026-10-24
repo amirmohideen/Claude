@@ -70,7 +70,8 @@ class GyroFoldTrackerTest {
         phone.fold(target = 165f, speed = 20f)
         val state = phone.state()
         assertEquals(165f, state.angle, 2f)
-        assertEquals(-17f, state.velocity, 2f)
+        // 20°/s, less the allowance for a hand's sway.
+        assertEquals(-15f, state.velocity, 2f)
         assertEquals(FoldDirection.CLOSING, state.direction)
     }
 
@@ -164,12 +165,81 @@ class GyroFoldTrackerTest {
 
     @Test
     fun `calibration carries over`() {
-        val phone = Phone(yPerClosingDegree = 1f)
+        val phone = Phone(yPerClosingDegree = 1f, halfOpenBelow = 165f)
         phone.fold(target = 120f, speed = 30f)
         val saved = phone.tracker.calibration()
         val fresh = GyroFoldTracker()
         fresh.restore(saved)
         assertTrue(fresh.calibrated)
+        assertEquals(phone.tracker.flatEdgeDegrees, fresh.flatEdgeDegrees, 0f)
+    }
+
+    @Test
+    fun `learns where the hinge stops reporting flat`() {
+        val phone = Phone(halfOpenBelow = 165f)
+        repeat(3) {
+            phone.fold(target = 120f, speed = 40f)
+            phone.fold(target = 180f, speed = 40f)
+            phone.rest(0.5f)
+        }
+        assertEquals(165f, phone.tracker.flatEdgeDegrees, 4f)
+    }
+
+    @Test
+    fun `learns a low flat edge even below the starting guess`() {
+        val phone = Phone(halfOpenBelow = 100f)
+        repeat(3) {
+            phone.fold(target = 60f, speed = 40f)
+            phone.fold(target = 180f, speed = 40f)
+            phone.rest(0.5f)
+        }
+        assertEquals(100f, phone.tracker.flatEdgeDegrees, 6f)
+    }
+
+    /** Turns the whole phone, flat, about each axis in turn at [degreesPerSecond] for [seconds]. */
+    private fun GyroFoldTracker.turnWhole(x: Float, y: Float, z: Float, seconds: Float, start: Long): Long {
+        var t = start
+        repeat((seconds / 0.005f).toInt()) {
+            t += 5_000_000L
+            onGyro(
+                t,
+                Math.toRadians(x.toDouble()).toFloat(),
+                Math.toRadians(y.toDouble()).toFloat(),
+                Math.toRadians(z.toDouble()).toFloat(),
+            )
+        }
+        return t
+    }
+
+    @Test
+    fun `tilting or twisting the whole phone makes no sound`() {
+        val tracker = GyroFoldTracker()
+        tracker.onHinge(0, 180f)
+        var t = tracker.turnWhole(x = 60f, y = 0f, z = 0f, seconds = 0.3f, start = 0)
+        assertEquals(0f, tracker.stateAt(t).speed, 0f)
+        t = tracker.turnWhole(x = 0f, y = 0f, z = 80f, seconds = 0.3f, start = t)
+        assertEquals(0f, tracker.stateAt(t).speed, 0f)
+        t = tracker.turnWhole(x = 40f, y = 40f, z = 30f, seconds = 0.3f, start = t)
+        assertEquals(0f, tracker.stateAt(t).speed, 0f)
+    }
+
+    @Test
+    fun `turning the whole flat phone about the hinge line stops once it can't be a fold`() {
+        val tracker = GyroFoldTracker()
+        tracker.onHinge(0, 180f)
+        var t = tracker.turnWhole(x = 0f, y = -60f, z = 0f, seconds = 0.2f, start = 0)
+        assertTrue("a fold this small is believable", tracker.stateAt(t).speed > 40f)
+        t = tracker.turnWhole(x = 0f, y = -60f, z = 0f, seconds = 1f, start = t)
+        assertEquals(0f, tracker.stateAt(t).speed, 0f)
+        assertEquals(180f, tracker.stateAt(t).angle, 0f)
+    }
+
+    @Test
+    fun `a shut phone makes no sound`() {
+        val tracker = GyroFoldTracker()
+        tracker.onHinge(0, 0f)
+        val t = tracker.turnWhole(x = 0f, y = 80f, z = 0f, seconds = 0.3f, start = 0)
+        assertEquals(0f, tracker.stateAt(t).speed, 0f)
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.amirmohideen.foldfx.core
 
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sign
@@ -12,7 +13,11 @@ import kotlin.math.sign
  *
  * The gyroscope sits in one half of the phone, so it feels the fold whenever that half swings.
  * The hinge's stops anchor the angle, and each time the hinge passes a stop they teach which axis
- * the hinge turns on and which way is closing. Safe to call from any thread.
+ * the hinge turns on, which way is closing, and how far the hinge folds before it leaves "flat".
+ *
+ * The gyroscope also feels the whole phone moving, so three checks keep that from counting as a
+ * fold: a fold turns only about the hinge axis; a phone the hinge still calls flat can't have
+ * folded past where it leaves flat; and a shut phone can't fold at all. Safe to call from any thread.
  */
 class GyroFoldTracker(private val slamSpeed: Float = 150f) {
 
@@ -45,6 +50,11 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
     private var lastMovingTime = 0L
     private var rate = 0f
     private var smoothedRate = 0f
+    private var smoothedOffAxis = 0f
+    private var foldRate = 0f
+    private var flatEdge = DEFAULT_FLAT_EDGE
+    private var notFolding = false
+    private var turnedSinceFlat = 0f
     private var stillSeconds = 0f
     private var missedLastSwing = false
     private val transitions = ArrayDeque<Transition>()
@@ -67,24 +77,33 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
     @Synchronized
     fun transitions(): List<Transition> = transitions.toList()
 
-    /** What has been learned, to keep between launches: x-axis votes, y-axis votes, closing-direction votes. */
+    /** Where the hinge stops reporting flat, as far as the stops have taught so far. */
+    val flatEdgeDegrees: Float
+        @Synchronized get() = flatEdge
+
+    /**
+     * What has been learned, to keep between launches: x-axis votes, y-axis votes,
+     * closing-direction votes, and where the hinge leaves flat.
+     */
     @Synchronized
-    fun calibration() = floatArrayOf(axisVotes[0], axisVotes[1], signVote)
+    fun calibration() = floatArrayOf(axisVotes[0], axisVotes[1], signVote, flatEdge)
 
     @Synchronized
     fun restore(calibration: FloatArray) {
-        if (calibration.size != 3) return
+        if (calibration.size < 3) return
         axisVotes[0] = calibration[0]
         axisVotes[1] = calibration[1]
         signVote = calibration[2]
+        if (calibration.size > 3) flatEdge = calibration[3]
         axis = pickAxis()
     }
 
     /** One gyroscope reading, in radians per second, stamped on the same clock as the hinge. */
     @Synchronized
-    fun onGyro(timeNanos: Long, x: Float, y: Float, @Suppress("UNUSED_PARAMETER") z: Float) {
+    fun onGyro(timeNanos: Long, x: Float, y: Float, z: Float) {
         val xd = x * RAD_TO_DEG
         val yd = y * RAD_TO_DEG
+        val zd = z * RAD_TO_DEG
         times[head] = timeNanos
         xRates[head] = xd
         yRates[head] = yd
@@ -95,8 +114,19 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
         hasGyro = true
         lastGyroTime = timeNanos
         rate = if (axis == AXIS_X) xd else yd
-        smoothedRate += (rate - smoothedRate) * (1f - exp(-dt / SMOOTHING_SECONDS))
+        val offAxis = if (axis == AXIS_X) hypot(yd, zd) else hypot(xd, zd)
+        val smoothing = 1f - exp(-dt / SMOOTHING_SECONDS)
+        smoothedRate += (rate - smoothedRate) * smoothing
+        smoothedOffAxis += (offAxis - smoothedOffAxis) * smoothing
         if (abs(rate) > MOVING_SPEED) lastMovingTime = timeNanos
+
+        // A fold turns the phone only about the hinge; turning about other axes too is the whole phone moving.
+        val purity = if (abs(smoothedRate) < 1f) {
+            1f
+        } else {
+            (1f - OFF_AXIS_PENALTY * (smoothedOffAxis / abs(smoothedRate) - OFF_AXIS_ALLOWED)).coerceIn(0f, 1f)
+        }
+        foldRate = if (notFolding || posture == SHUT) 0f else smoothedRate * purity
 
         // Until a stop confirms it: from flat the hinge can only close, and from shut only open.
         if (signVote == 0f && abs(rate) > GUESS_SPEED) {
@@ -104,11 +134,16 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
             if (posture == SHUT) guessedSign = sign(rate)
         }
         val direction = closingSign()
-        if (direction != 0f) angle += direction * rate * dt
+        if (direction != 0f) angle += direction * foldRate * dt
         angle = when (posture) {
-            FLAT -> angle.coerceIn(MIN_WHILE_FLAT, FLAT)
             SHUT -> angle.coerceIn(SHUT, MAX_WHILE_SHUT)
             else -> angle.coerceIn(SHUT, FLAT)
+        }
+        // Still flat, but supposedly folded well past where the hinge leaves flat: the whole phone turned.
+        if (posture == FLAT && angle < flatEdge - FLAT_EDGE_SLACK) {
+            notFolding = true
+            foldRate = 0f
+            angle = FLAT
         }
 
         // Gyroscopes drift a little, so at rest the angle settles onto the stop the hinge reports.
@@ -116,6 +151,8 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
         if (stillSeconds > SETTLE_AFTER_SECONDS && (posture == FLAT || posture == SHUT)) {
             angle += (posture - angle) * (1f - exp(-dt / SETTLE_SECONDS))
         }
+        if (stillSeconds > RESUME_AFTER_SECONDS) notFolding = false
+        turnedSinceFlat = if (posture == FLAT && stillSeconds > RESUME_AFTER_SECONDS) 0f else turnedSinceFlat + rate * dt
     }
 
     /** One hinge reading; returns a slam if this stop ended one. */
@@ -129,6 +166,7 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
         }
         if (value == previous) return null
         val closing = value < previous
+        notFolding = false
 
         val window = timeNanos - FELT_WINDOW_NANOS
         val feltX = integrate(window, timeNanos, AXIS_X)
@@ -141,6 +179,10 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
         if (!missedLastSwing) {
             val vote = if (closing) -sign(felt) else sign(felt)
             signVote += vote * min(abs(felt), 90f)
+            // Leaving flat, the turn since the phone last rested flat shows where the hinge stops calling itself flat.
+            if (previous == FLAT && abs(turnedSinceFlat) >= MIN_FELT_DEGREES) {
+                flatEdge += ((FLAT - abs(turnedSinceFlat)).coerceIn(MIN_FLAT_EDGE, FLAT - 2f) - flatEdge) * EDGE_LEARNING
+            }
         }
         transitions.addLast(
             Transition(previous, value, felt, angle, quietMs = (timeNanos - lastMovingTime) / 1_000_000f),
@@ -167,12 +209,11 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
     fun stateAt(nowNanos: Long): FoldState {
         if (!hasGyro || nowNanos - lastGyroTime > STALE_NANOS) return FoldState(angle, 0f)
         // Ignore the slight sway of a hand holding the phone.
-        val speed = max(abs(smoothedRate) - DEADZONE, 0f)
+        val speed = max(abs(foldRate) - DEADZONE, 0f)
         val direction = when {
-            closingSign() != 0f -> closingSign() * sign(smoothedRate)
+            closingSign() != 0f -> closingSign() * sign(foldRate)
             posture == FLAT -> -1f
-            posture == SHUT -> 1f
-            else -> sign(smoothedRate)
+            else -> sign(foldRate)
         }
         return FoldState(angle, direction * speed)
     }
@@ -226,10 +267,16 @@ class GyroFoldTracker(private val slamSpeed: Float = 150f) {
         const val MOVING_SPEED = 30f
         const val GUESS_SPEED = 8f
         const val STILL_SPEED = 3f
-        const val DEADZONE = 3f
+        const val DEADZONE = 5f
+        const val OFF_AXIS_ALLOWED = 0.35f
+        const val OFF_AXIS_PENALTY = 1.5f
+        const val DEFAULT_FLAT_EDGE = 130f
+        const val MIN_FLAT_EDGE = 90f
+        const val FLAT_EDGE_SLACK = 15f
+        const val EDGE_LEARNING = 0.6f
+        const val RESUME_AFTER_SECONDS = 0.25f
         const val SETTLE_AFTER_SECONDS = 0.4f
         const val SETTLE_SECONDS = 0.4f
-        const val MIN_WHILE_FLAT = 120f
         const val MAX_WHILE_SHUT = 30f
         const val MISSED_CLOSING = 110f
         const val MISSED_OPENING = 70f

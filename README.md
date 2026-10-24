@@ -37,7 +37,9 @@ fold with the gyroscope instead. The gyroscope sits in one half of the phone and
 swing, while the hinge's stops anchor the angle and teach FoldFX which axis the hinge turns on and
 which way is closing (the lesson is kept between launches). This means **only one side of the
 phone can be felt**: hold one side still and swing the other, and if the door doesn't respond,
-swap sides. Phones that report every angle, like the Pixel Folds, use the hinge sensor directly.
+swap sides. The gyroscope also feels the whole phone moving, so FoldFX ignores turns that aren't
+about the hinge line, turns a flat phone couldn't have made without leaving flat, and anything
+while the phone is shut. Phones that report every angle, like the Pixel Folds, use the hinge sensor directly.
 
 | Part | Where | What it does |
 | --- | --- | --- |
